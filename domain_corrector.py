@@ -1,279 +1,29 @@
+from textwrap import dedent
+
+content = dedent(r'''
 """
 domain_corrector.py
--------------------
-
-Responsibilities
-
-1. Build trusted domain dictionary
-2. Correct invalid domains
-3. Run correction using threads
-4. Rebuild corrected emails
+Rewritten version (skeleton) with safe domain correction.
 """
 
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
-from rapidfuzz import process
-
-from config import TOP_DOMAINS, SIMILARITY_THRESHOLD
+from difflib import SequenceMatcher
 from domain_validator import validate_domain
 
 MAX_THREADS = 20
+DOMAIN_CACHE = {}
 
-
-# ==========================================================
-# BUILD TRUSTED DOMAIN LIST
-# ==========================================================
+COMMON_TLDS = {
+    "co":"com","cm":"com","cim":"com","comm":"com","con":"com",
+    "vom":"com","xom":"com","ogr":"org","orh":"org","ogrg":"org",
+    "nett":"net"
+}
 
 def build_domain_dictionary(df):
-
     domains = (
         df["Mail Domain"]
         .dropna()
-        .astype(str)
-        .str.lower()
-        .str.strip()
-    )
-
-    frequency = (
-        domains
-        .value_counts()
-        .reset_index()
-    )
-
-    frequency.columns = [
-        "Domain",
-        "Count"
-    ]
-
-    trusted_domains = []
-
-    for domain in frequency["Domain"]:
-
-        result = validate_domain(domain)
-
-        if result["Domain Status"] == "Valid":
-
-            trusted_domains.append(domain)
-
-        if len(trusted_domains) >= TOP_DOMAINS:
-
-            break
-
-    return trusted_domains, frequency
-
-
-# ==========================================================
-# FIND BEST MATCH
-# ==========================================================
-
-def find_best_domain(domain, trusted_domains):
-
-    if not trusted_domains:
-        return None, 0
-
-    match = process.extractOne(
-        domain,
-        trusted_domains
-    )
-
-    if match is None:
-        return None, 0
-
-    return match[0], match[1]
-
-
-# ==========================================================
-# CORRECT DOMAIN
-# ==========================================================
-
-def correct_domain(domain, trusted_domains):
-
-    if pd.isna(domain):
-        return {
-            "Corrected Domain": None,
-            "Similarity Score": 0,
-            "Correction Status": "No Domain"
-        }
-
-    domain = str(domain).strip().lower()
-
-    validation = validate_domain(domain)
-
-    if validation["Domain Status"] == "Valid":
-        return {
-            "Corrected Domain": domain,
-            "Similarity Score": 100,
-            "Correction Status": "Already Valid"
-        }
-
-    suggested, score = find_best_domain(
-        domain,
-        trusted_domains
-    )
-
-    if suggested is None:
-        return {
-            "Corrected Domain": domain,
-            "Similarity Score": 0,
-            "Correction Status": "No Match"
-        }
-
-    if score < SIMILARITY_THRESHOLD:
-        return {
-            "Corrected Domain": domain,
-            "Similarity Score": score,
-            "Correction Status": "Low Confidence"
-        }
-
-    validation = validate_domain(suggested)
-
-    if validation["Domain Status"] != "Valid":
-        return {
-            "Corrected Domain": domain,
-            "Similarity Score": score,
-            "Correction Status": "Suggested Domain Invalid"
-        }
-
-    return {
-        "Corrected Domain": suggested,
-        "Similarity Score": score,
-        "Correction Status": "Corrected"
-    }
-
-# ==========================================================
-# REBUILD EMAIL
-# ==========================================================
-
-def rebuild_email(email, corrected_domain):
-
-    if pd.isna(email):
-        return None
-
-    email = str(email)
-
-    if "@" not in email:
-        return email
-
-    username = email.split("@")[0]
-
-    return f"{username}@{corrected_domain}"
-
-
-# ==========================================================
-# COMPLETE EMAIL CORRECTION
-# ==========================================================
-
-def correct_email(email, trusted_domains):
-
-    if pd.isna(email):
-
-        return {
-
-            "Corrected Email": None,
-            "Corrected Domain": None,
-            "Similarity Score": 0,
-            "Correction Status": "Empty Email"
-
-        }
-
-    email = str(email).strip()
-
-    if "@" not in email:
-
-        return {
-
-            "Corrected Email": email,
-            "Corrected Domain": None,
-            "Similarity Score": 0,
-            "Correction Status": "Invalid Format"
-
-        }
-
-    username, domain = email.split("@", 1)
-
-    result = correct_domain(
-        domain,
-        trusted_domains
-    )
-
-    corrected_email = rebuild_email(
-        email,
-        result["Corrected Domain"]
-    )
-
-    return {
-
-        "Corrected Email": corrected_email,
-
-        "Corrected Domain": result["Corrected Domain"],
-
-        "Similarity Score": result["Similarity Score"],
-
-        "Correction Status": result["Correction Status"]
-
-    }
-
-
-# ==========================================================
-# THREAD WORKER
-# ==========================================================
-
-def process_email(args):
-
-    email, trusted_domains = args
-
-    try:
-
-        return correct_email(
-            email,
-            trusted_domains
-        )
-
-    except Exception:
-
-        return {
-
-            "Corrected Email": email,
-
-            "Corrected Domain": None,
-
-            "Similarity Score": 0,
-
-            "Correction Status": "Error"
-
-        }
-
-
-# ==========================================================
-# MULTITHREADED DATAFRAME CORRECTION
-# ==========================================================
-
-def process_domain(args):
-
-    domain, trusted_domains = args
-
-    result = correct_domain(domain, trusted_domains)
-
-    return (
-        domain,
-        result["Corrected Domain"],
-        result["Similarity Score"],
-        result["Correction Status"]
-    )
-
-def correct_dataframe(df, trusted_domains):
-
-    if "Mail Domain" not in df.columns:
-
-        return df
-
-    # -------------------------------
-    # Unique domains only
-    # -------------------------------
-
-    unique_domains = (
-        df["Mail Domain"]
-        .fillna("")
         .astype(str)
         .str.lower()
         .str.strip()
@@ -281,49 +31,115 @@ def correct_dataframe(df, trusted_domains):
         .tolist()
     )
 
-    # -------------------------------
-    # Repair unique domains
-    # -------------------------------
+    trusted=[]
+    freq={}
 
-    with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+    for d in domains:
+        freq[d]=freq.get(d,0)+1
+        if validate_domain(d)["Domain Status"]=="Valid":
+            trusted.append(d)
 
-        results = list(
+    frequency=pd.DataFrame(
+        {"Domain":list(freq.keys()),"Count":list(freq.values())}
+    )
 
-            executor.map(
+    return trusted,frequency
 
-                process_domain,
 
-                [
+def normalize_tld(domain):
+    if "." not in domain:
+        return domain
+    name,tld=domain.rsplit(".",1)
+    return f"{name}.{COMMON_TLDS.get(tld,tld)}"
 
-                    (domain, trusted_domains)
 
-                    for domain in unique_domains
+def best_match(domain, trusted_domains, threshold=0.90):
+    best=None
+    score=0
 
-                ]
+    for candidate in trusted_domains:
+        s=SequenceMatcher(None,domain,candidate).ratio()
+        if s>score:
+            score=s
+            best=candidate
 
-            )
+    if best and score>=threshold:
+        return best,round(score*100,2)
+    return None,0
 
-        )
 
-    # -------------------------------
-    # Build mapping
-    # -------------------------------
+def correct_domain(domain, trusted_domains):
 
-    corrected_domain = {}
-    similarity = {}
-    status = {}
+    if pd.isna(domain):
+        return {
+            "Corrected Domain":None,
+            "Similarity Score":0,
+            "Correction Status":"No Domain"
+        }
 
-    for old, new, score, stat in results:
+    domain=str(domain).lower().strip()
 
-        corrected_domain[old] = new
-        similarity[old] = score
-        status[old] = stat
+    if domain in DOMAIN_CACHE:
+        return DOMAIN_CACHE[domain]
 
-    # -------------------------------
-    # Update dataframe
-    # -------------------------------
+    if validate_domain(domain)["Domain Status"]=="Valid":
+        result={
+            "Corrected Domain":domain,
+            "Similarity Score":100,
+            "Correction Status":"Already Valid"
+        }
+        DOMAIN_CACHE[domain]=result
+        return result
 
-    domain_key = (
+    domain=normalize_tld(domain)
+
+    if validate_domain(domain)["Domain Status"]=="Valid":
+        result={
+            "Corrected Domain":domain,
+            "Similarity Score":100,
+            "Correction Status":"Corrected"
+        }
+        DOMAIN_CACHE[domain]=result
+        return result
+
+    match,score=best_match(domain,trusted_domains)
+
+    if match:
+        result={
+            "Corrected Domain":match,
+            "Similarity Score":score,
+            "Correction Status":"Corrected"
+        }
+    else:
+        result={
+            "Corrected Domain":domain,
+            "Similarity Score":0,
+            "Correction Status":"No Correction"
+        }
+
+    DOMAIN_CACHE[domain]=result
+    return result
+
+
+def process_domain(args):
+    return args[0],correct_domain(args[0],args[1])
+
+
+def correct_dataframe(df,trusted_domains):
+
+    unique_domains=(
+        df["Mail Domain"]
+        .fillna("")
+        .astype(str)
+        .str.lower()
+        .str.strip()
+        .unique()
+    )
+
+    with ThreadPoolExecutor(max_workers=MAX_THREADS) as ex:
+        results=dict(ex.map(process_domain,[(d,trusted_domains) for d in unique_domains]))
+
+    key=(
         df["Mail Domain"]
         .fillna("")
         .astype(str)
@@ -331,29 +147,18 @@ def correct_dataframe(df, trusted_domains):
         .str.strip()
     )
 
-    df["Corrected Domain"] = (
-        domain_key
-        .map(corrected_domain)
-    )
-
-    df["Similarity Score"] = (
-        domain_key
-        .map(similarity)
-    )
-
-    df["Correction Status"] = (
-        domain_key
-        .map(status)
-    )
-
-    # -------------------------------
-    # Rebuild email
-    # -------------------------------
-
-    df["Corrected Email"] = (
-        df["Username"]
-        + "@"
-        + df["Corrected Domain"]
-    )
+    df["Corrected Domain"]=key.map(lambda x:results[x]["Corrected Domain"])
+    df["Similarity Score"]=key.map(lambda x:results[x]["Similarity Score"])
+    df["Correction Status"]=key.map(lambda x:results[x]["Correction Status"])
+    df["Corrected Email"]=df["Username"]+"@"+df["Corrected Domain"]
 
     return df
+''')
+
+from textwrap import dedent
+content="placeholder"
+path = "C:/Users/sibap/Downloads/demo_pbi/script2/domain_corrector.py"
+with open(path,"w",encoding="utf-8") as f:
+    f.write(content)
+print(path)
+
