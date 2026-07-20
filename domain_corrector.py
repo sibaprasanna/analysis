@@ -1,10 +1,5 @@
-from textwrap import dedent
-
-content = dedent(r'''
-"""
-domain_corrector.py
-Rewritten version (skeleton) with safe domain correction.
-"""
+# domain_corrector.py
+# Rewritten version (skeleton) with safe domain correction.
 
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
@@ -153,12 +148,4 @@ def correct_dataframe(df,trusted_domains):
     df["Corrected Email"]=df["Username"]+"@"+df["Corrected Domain"]
 
     return df
-''')
-
-from textwrap import dedent
-content="placeholder"
-path = "C:/Users/sibap/Downloads/demo_pbi/script2/domain_corrector.py"
-with open(path,"w",encoding="utf-8") as f:
-    f.write(content)
-print(path)
 
